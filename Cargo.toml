@@ -1,0 +1,13 @@
+[package]
+name = "mediapipe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "Unlicense"
+description = "Map MediaPipe vision results onto a camera preview."
+repository = "https://github.com/leptoskit/mediapipe"
+readme = "README.md"
+categories = ["graphics", "computer-vision"]
+keywords = ["mediapipe", "camera", "landmarks", "overlay"]
+
+[dependencies]
