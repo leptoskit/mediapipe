@@ -226,6 +226,13 @@ pub struct OverlayTransform {
     fit: PreviewFit,
     source: Rect,
     destination: Rect,
+    scale_x: f64,
+    scale_y: f64,
+    pixel_scale_x: f64,
+    pixel_offset_x: f64,
+    pixel_offset_y: f64,
+    norm_scale_x: f64,
+    norm_scale_y: f64,
 }
 
 impl OverlayTransform {
@@ -269,6 +276,19 @@ impl OverlayTransform {
         let fitted = apply_fit(fit, upright_size, view_size);
         let source = inscribe_center(fitted.source, upright_size);
         let destination = inscribe_center(fitted.destination, view_size);
+        let scale_x = destination.width() / source.width();
+        let scale_y = destination.height() / source.height();
+        let (pixel_scale_x, pixel_offset_x) = if mirrored {
+            (
+                -scale_x,
+                destination.left + (upright_size.width - source.left) * scale_x,
+            )
+        } else {
+            (scale_x, destination.left - source.left * scale_x)
+        };
+        let pixel_offset_y = destination.top - source.top * scale_y;
+        let norm_scale_x = pixel_scale_x * upright_size.width;
+        let norm_scale_y = scale_y * upright_size.height;
 
         Ok(Self {
             upright_size,
@@ -277,6 +297,13 @@ impl OverlayTransform {
             fit,
             source,
             destination,
+            scale_x,
+            scale_y,
+            pixel_scale_x,
+            pixel_offset_x,
+            pixel_offset_y,
+            norm_scale_x,
+            norm_scale_y,
         })
     }
 
@@ -317,46 +344,50 @@ impl OverlayTransform {
     }
 
     /// Horizontal scale from image pixels to view pixels.
+    #[inline]
     #[must_use]
-    pub fn scale_x(self) -> f64 {
-        self.destination.width() / self.source.width()
+    pub const fn scale_x(self) -> f64 {
+        self.scale_x
     }
 
     /// Vertical scale from image pixels to view pixels.
+    #[inline]
     #[must_use]
-    pub fn scale_y(self) -> f64 {
-        self.destination.height() / self.source.height()
+    pub const fn scale_y(self) -> f64 {
+        self.scale_y
     }
 
     /// View position of a point given in normalized upright-image coordinates.
+    #[inline]
     #[must_use]
     pub fn map_normalized(self, x: f64, y: f64) -> Point {
-        self.map_pixel(x * self.upright_size.width, y * self.upright_size.height)
+        Point {
+            x: x * self.norm_scale_x + self.pixel_offset_x,
+            y: y * self.norm_scale_y + self.pixel_offset_y,
+        }
     }
 
     /// View position of a landmark. `z` is ignored.
+    #[inline]
     #[must_use]
     pub fn map_landmark(self, landmark: NormalizedLandmark) -> Point {
         self.map_normalized(landmark.x, landmark.y)
     }
 
     /// View position of a point given in upright-image pixels.
+    #[inline]
     #[must_use]
     pub fn map_pixel(self, x: f64, y: f64) -> Point {
-        let sensor_x = if self.mirrored {
-            self.upright_size.width - x
-        } else {
-            x
-        };
         Point {
-            x: self.destination.left + (sensor_x - self.source.left) * self.scale_x(),
-            y: self.destination.top + (y - self.source.top) * self.scale_y(),
+            x: x * self.pixel_scale_x + self.pixel_offset_x,
+            y: y * self.scale_y + self.pixel_offset_y,
         }
     }
 
     /// View rectangle covering a normalized region.
     ///
     /// The result is ordered even when mirroring swaps the horizontal edges.
+    #[inline]
     #[must_use]
     pub fn map_normalized_rect(self, rect: NormalizedRect) -> Rect {
         Rect::from_points(
@@ -368,6 +399,7 @@ impl OverlayTransform {
     /// View rectangle covering a pixel bounding box.
     ///
     /// The result is ordered even when mirroring swaps the horizontal edges.
+    #[inline]
     #[must_use]
     pub fn map_bounding_box(self, bounds: BoundingBox) -> Rect {
         Rect::from_points(
