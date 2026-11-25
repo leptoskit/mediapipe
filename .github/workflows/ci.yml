@@ -5,18 +5,61 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: fmt, clippy, test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: 1.95.0
-          components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --locked
-      - run: cargo test --all-features --locked
+          persist-credentials: false
+
+      - name: install rust
+        uses: $/.github/actions/rust
+
+      - name: cache rust artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: false
+
+      - name: check formatting
+        run: cargo fmt --check
+
+      - name: clippy (default features)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: clippy (all features)
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: test (default features)
+        run: cargo test --locked
+
+      - name: test (all features)
+        run: cargo test --all-features --locked
+
+  lint:
+    name: workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: install zizmor
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: zizmor@1.33.1
+
+      - name: audit GitHub Actions workflows
+        run: zizmor --no-online-audits --no-progress .github

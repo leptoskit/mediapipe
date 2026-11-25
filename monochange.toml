@@ -1,0 +1,195 @@
+# :schema https://monochange.github.io/monochange/schemas/monochange.schema.json
+
+# =============================================================================
+# monochange.toml — release configuration for leptoskit/mediapipe
+# =============================================================================
+#
+# This file is the single source of truth for release planning, version bumps,
+# changelog generation, and publishing. Run `monochange step validate` and
+# `monochange check` to validate it against the crate.
+
+[defaults]
+bump_propagation = "patch"
+include_private = false
+warn_on_group_mismatch = true
+package_type = "cargo"
+
+[defaults.changelog]
+path = "CHANGELOG.md"
+format = "keep_a_changelog"
+initial_header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
+this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+"""
+
+[changelog.sections]
+breaking = { heading = "Breaking Changes", priority = 10 }
+feat = { heading = "Features", priority = 20 }
+fix = { heading = "Fixes", priority = 30 }
+perf = { heading = "Performance", priority = 35 }
+docs = { heading = "Documentation", priority = 40 }
+other = { heading = "Notes", priority = 50 }
+
+[changelog.types]
+major = { bump = "major", section = "breaking" }
+breaking = { bump = "major", section = "breaking" }
+feat = { bump = "minor", section = "feat" }
+fix = { bump = "patch", section = "fix" }
+perf = { bump = "patch", section = "perf", description = "A faster path with no behaviour change" }
+docs = { bump = "none", section = "docs" }
+none = { bump = "none", section = "other" }
+
+# =============================================================================
+# Change files
+# =============================================================================
+
+[changesets]
+directory = ".changeset"
+
+[changesets.affected]
+enabled = true
+required = true
+skip_labels = ["release", "dependencies"]
+comment_on_failure = true
+ignored_paths = [
+	"tests/**",
+	"CHANGELOG.md",
+	"README.md",
+	"LICENSE",
+	"monochange.toml",
+	".changeset/*.md",
+	".github/**",
+	".cursor/**",
+	".gitignore",
+	"rust-toolchain.toml",
+	"scripts/**",
+]
+
+# =============================================================================
+# Packages
+# =============================================================================
+
+[package.mediapipe]
+path = "."
+type = "cargo"
+tag = true
+release = true
+version_format = "primary"
+changelog = { path = "CHANGELOG.md", format = "keep_a_changelog" }
+
+# =============================================================================
+# Ecosystems & publishing
+# =============================================================================
+
+[ecosystems.cargo]
+enabled = true
+versioned_files = ["Cargo.toml"]
+lockfile_commands = [
+	{ command = "cargo update --workspace", cwd = ".", shell = "bash" },
+]
+
+[ecosystems.cargo.publish]
+enabled = true
+mode = "builtin"
+trusted_publishing = { enabled = true, mode = "preferred", repository = "leptoskit/mediapipe", workflow = "publish.yml", environment = "publisher" }
+
+[ecosystems.cargo.publish.attestations]
+require_registry_provenance = true
+
+# =============================================================================
+# Source control
+# =============================================================================
+
+[source]
+provider = "github"
+owner = "leptoskit"
+repo = "mediapipe"
+
+[source.releases]
+enabled = true
+draft = true
+prerelease = false
+source = "monochange"
+branches = ["main"]
+enforce_for_tags = true
+enforce_for_publish = true
+enforce_for_commit = false
+
+[source.pull_requests]
+enabled = true
+branch_prefix = "monochange/release"
+base = "main"
+title = "chore(release): prepare release"
+labels = ["release", "automated"]
+auto_merge = false
+verified_commits = true
+
+# =============================================================================
+# Manifest lints
+# =============================================================================
+
+[lints]
+use = ["cargo/recommended"]
+
+[lints.rules]
+# monochange 0.21.0 compares `package.path` (".") against
+# `relative_to_root(workspace_root, workspace_root)` (""), which flags a single
+# root-level crate as unmanaged even though it is declared above.
+"cargo/unlisted-package-private" = "off"
+
+# =============================================================================
+# CLI commands
+# =============================================================================
+
+[cli.change]
+help_text = "Create a changeset for mediapipe"
+inputs = [
+	{ name = "interactive", type = "boolean", default = false, short = "i" },
+	{ name = "package", type = "string_list", required = true },
+	{ name = "bump", type = "choice", choices = ["none", "patch", "minor", "major"], default = "patch" },
+	{ name = "version", type = "string" },
+	{ name = "reason", type = "string", required = true },
+	{ name = "type", type = "string" },
+	{ name = "caused_by", type = "string_list" },
+	{ name = "details", type = "string" },
+	{ name = "output", type = "path" },
+]
+steps = [
+	{ name = "create change file", type = "CreateChangeFile", inputs = [
+		"interactive",
+		"package",
+		"bump",
+		"version",
+		"type",
+		"caused_by",
+		"reason",
+		"details",
+		"output",
+	] },
+]
+
+[cli.release]
+help_text = "Prepare the release pull request. Intended to run in GitHub Actions."
+inputs = [
+	{ name = "format", type = "choice", choices = ["text", "json", "json-min", "markdown"], default = "text" },
+	{ name = "no_verify", type = "boolean", default = true },
+	{ name = "commit", help_text = "Whether to commit the changes", type = "boolean", default = false },
+	{ name = "create_pr", help_text = "Whether to create the pull request after committing", type = "boolean", default = false },
+	{ name = "write_empty_release_record", help_text = "Whether to write a release record when no packages are released", type = "boolean", default = false },
+]
+steps = [
+	{ type = "PrepareRelease", name = "plan release", allow_empty_changesets = true, inputs = { format = "{{ inputs.format }}", write_empty_release_record = "{{ inputs.write_empty_release_record }}" } },
+	{ type = "CommitRelease", name = "create release commit", when = "{{ number_of_changesets > 0 && inputs.commit }}", inputs = { no_verify = "{{ inputs.no_verify }}", stage_all = true } },
+	{ type = "OpenReleaseRequest", name = "create the pull request", when = "{{ number_of_changesets > 0 && inputs.commit && inputs.create_pr }}", inputs = { no_verify = "{{ inputs.no_verify }}", stage_all = true } },
+]
+
+[cli.publish-check]
+help_text = "Validate the release and preview package publishing in dry-run mode"
+dry_run = true
+steps = [
+	{ type = "PublishPackages", name = "publish packages dry run" },
+]

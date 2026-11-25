@@ -1,0 +1,320 @@
+name: publish
+run-name: "publish ${{ inputs.tag || github.ref_name }} @ ${{ inputs.checkout_ref || github.sha }} (dry-run=${{ inputs.dry_run == true }})"
+
+# Validates the release commit, packages and tests the crate, publishes to crates.io (preferring
+# trusted publishing via OIDC with CARGO_REGISTRY_TOKEN fallback for initial enrollment), and only
+# then flips the draft GitHub release public.
+#
+# release.yml dispatches this workflow after creating the tag and draft release (because a tag
+# pushed with GITHUB_TOKEN does not trigger another workflow). The `push: tags` trigger remains as
+# a fallback, and `workflow_dispatch` also serves as both the dry-run gate and a manual retry path.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (for example v0.2.1)"
+        required: true
+        type: string
+      checkout_ref:
+        description: "Optional commit SHA to validate (used by dry-run previews before a tag exists)"
+        required: false
+        type: string
+      dry_run:
+        description: "Simulate: validate, test, and package everything, publish nothing"
+        required: false
+        type: boolean
+        default: false
+      force_token_auth:
+        description: "Skip trusted publishing and use CARGO_REGISTRY_TOKEN"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  # Never cancel a publish mid-flight.
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  resolve-revision:
+    name: resolve release revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: resolve tag and checkout ref to one commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+          REQUESTED_REF: ${{ inputs.checkout_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            echo "::error::Expected a release tag starting with 'v', got '${RELEASE_TAG}'." >&2
+            exit 1
+          fi
+
+          resolve_sha() {
+            local ref="$1" payload
+            if ! payload="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${ref}" 2>/dev/null)"; then
+              return 1
+            fi
+            printf '%s' "$payload" | jq -r '.sha'
+          }
+
+          requested="${REQUESTED_REF:-$RELEASE_TAG}"
+
+          tag_sha=""
+          if candidate="$(resolve_sha "refs/tags/${RELEASE_TAG}")"; then
+            tag_sha="$candidate"
+          elif [ "$DRY_RUN" != "true" ]; then
+            echo "::error::Release tag '${RELEASE_TAG}' does not resolve to a commit." >&2
+            exit 1
+          fi
+
+          if ! resolved_sha="$(resolve_sha "$requested")"; then
+            echo "::error::Checkout ref '${requested}' does not resolve to a commit." >&2
+            exit 1
+          fi
+
+          if [ -n "$tag_sha" ] && [ "$tag_sha" != "$resolved_sha" ]; then
+            echo "::error::${RELEASE_TAG} is at ${tag_sha} but '${requested}' is at ${resolved_sha}; refusing to build a mismatched revision." >&2
+            exit 1
+          fi
+
+          if [[ ! "$resolved_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Checkout ref did not resolve to a full commit SHA." >&2
+            exit 1
+          fi
+
+          if [ "$DRY_RUN" != "true" ]; then
+            main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${resolved_sha}...${main_sha}" --jq '.status')"
+            if [ "$status" != "identical" ] && [ "$status" != "ahead" ]; then
+              echo "::error::Release commit ${resolved_sha} has not been merged into main." >&2
+              exit 1
+            fi
+          fi
+
+          version="${RELEASE_TAG#v}"
+          echo "sha=${resolved_sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${RELEASE_TAG} (version ${version}) from ${resolved_sha}."
+
+  validate:
+    name: validate and package
+    needs: resolve-revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: checkout release revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-revision.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: install rust
+        uses: $/.github/actions/rust
+
+      - name: cache rust artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Publication reads caches and never writes one a pull request or dry run could poison.
+          lookup-only: true
+
+      - name: install monochange
+        uses: $/.github/actions/install-monochange
+
+      - name: verify manifest version matches tag
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-revision.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          packages="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | [.name, .version, .manifest_path] | @tsv')"
+          if [ -z "$packages" ]; then
+            echo "::error::cargo metadata listed no publishable packages." >&2
+            exit 1
+          fi
+
+          failed=0
+          while IFS=$'\t' read -r name declared manifest; do
+            if [ "$declared" != "$RELEASE_VERSION" ]; then
+              echo "::error file=${manifest}::${name} is version ${declared}, tag says ${RELEASE_VERSION}" >&2
+              failed=1
+            fi
+          done <<< "$packages"
+
+          exit "$failed"
+
+      - name: validate monochange configuration
+        run: |
+          set -euo pipefail
+          monochange step validate
+          monochange check
+
+      - name: run checks and tests
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo test --locked
+          cargo test --all-features --locked
+
+      - name: verify crate builds from its package archive
+        run: cargo package --locked
+
+  publish-crates:
+    name: publish crate
+    needs: [resolve-revision, validate]
+    if: inputs.dry_run != true && github.repository_owner == 'leptoskit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: publisher
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: checkout release revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-revision.outputs.sha }}
+          persist-credentials: false
+
+      - name: install rust
+        uses: $/.github/actions/rust
+
+      - name: verify the draft release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft --jq '"Release \(.tagName) exists (draft: \(.isDraft))."'; then
+            echo "::error::Release ${RELEASE_TAG} does not exist; release.yml creates it before dispatching this workflow." >&2
+            exit 1
+          fi
+
+      - name: request a crates.io credential via OIDC
+        id: oidc
+        # A crate that is not yet enrolled with a trusted publisher makes this fail; the token
+        # fallback below covers that initial publish.
+        continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: resolve crates.io authentication
+        id: auth
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          FORCE_TOKEN: ${{ inputs.force_token_auth == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$FORCE_TOKEN" != "true" ] && [ -n "$OIDC_TOKEN" ]; then
+            echo "path=trusted" >> "$GITHUB_OUTPUT"
+            echo "Using trusted publishing for crates.io."
+            exit 0
+          fi
+
+          if [ -n "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "path=token" >> "$GITHUB_OUTPUT"
+            echo "::notice::Using CARGO_REGISTRY_TOKEN for crates.io; trusted publishing is not enrolled or was bypassed."
+            exit 0
+          fi
+
+          echo "::error::No crates.io credential: OIDC exchange failed and CARGO_REGISTRY_TOKEN is unset." >&2
+          exit 1
+
+      - name: publish crate to crates.io
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          TOKEN_SECRET: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          AUTH_PATH: ${{ steps.auth.outputs.path }}
+          VERSION: ${{ needs.resolve-revision.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$AUTH_PATH" = "trusted" ]; then
+            export CARGO_REGISTRY_TOKEN="$OIDC_TOKEN"
+          else
+            export CARGO_REGISTRY_TOKEN="$TOKEN_SECRET"
+          fi
+
+          package="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | .name' | head -1)"
+          if [ -z "$package" ]; then
+            echo "::error::No publishable package found." >&2
+            exit 1
+          fi
+
+          lower="$(printf '%s' "$package" | tr '[:upper:]' '[:lower:]')"
+          len="${#lower}"
+          if [ "$len" -eq 1 ]; then
+            index_path="1/${lower}"
+          elif [ "$len" -eq 2 ]; then
+            index_path="2/${lower}"
+          elif [ "$len" -eq 3 ]; then
+            index_path="3/${lower:0:1}/${lower}"
+          else
+            index_path="${lower:0:2}/${lower:2:2}/${lower}"
+          fi
+
+          if curl -fsSL "https://index.crates.io/${index_path}" 2>/dev/null \
+            | jq -e --arg version "$VERSION" 'select(.vers == $version)' >/dev/null; then
+            echo "${package} ${VERSION} is already published; skipping."
+            exit 0
+          fi
+
+          echo "Publishing ${package} ${VERSION}."
+          cargo publish --locked
+
+  finalize-release:
+    name: publish the github release
+    needs: [resolve-revision, validate, publish-crates]
+    if: inputs.dry_run != true && github.repository_owner == 'leptoskit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: flip the draft release public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release edit "$RELEASE_TAG" --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          is_draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+          if [ "$is_draft" != "false" ]; then
+            echo "::error::Release ${RELEASE_TAG} is still a draft after publishing it." >&2
+            exit 1
+          fi
+          echo "Release ${RELEASE_TAG} is public."

@@ -1,1 +1,5 @@
 /target
+
+# monochange's local cache is rebuilt on every run. Release records under
+# .monochange/releases are committed release state, so only the cache is ignored.
+.monochange/local/
