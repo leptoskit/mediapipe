@@ -1,13 +1,47 @@
 [package]
 name = "mediapipe"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.83"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
 license = "Unlicense"
-description = "Map MediaPipe vision results onto a camera preview."
+description = "MediaPipe tasks, preview overlay mapping, verified model pinning, and LeptosKit runtime bridge."
 repository = "https://github.com/leptoskit/mediapipe"
 readme = "README.md"
 categories = ["graphics", "computer-vision"]
-keywords = ["mediapipe", "camera", "landmarks", "overlay"]
+keywords = ["mediapipe", "camera", "landmarks", "overlay", "leptoskit"]
+
+[package.metadata.leptoskit.runtime]
+name = "mediapipe"
+apple-module = "LeptosKitMediaPipe"
+apple-type = "MediaPipePlugin"
+apple-context = true
+apple-pods = [{ name = "MediaPipeTasksVision", version = "0.10.21" }]
+android-type = "dev.leptoskit.mediapipe.MediaPipePlugin"
+android-context = true
+android-dependencies = ["com.google.mediapipe:tasks-vision:0.10.21"]
+
+[package.metadata.leptoskit.runtime.macos]
+rust-factory = "bridge::host_plugin"
+
+[package.metadata.leptoskit.runtime.linux]
+rust-factory = "bridge::host_plugin"
+
+[package.metadata.leptoskit.runtime.windows]
+rust-factory = "bridge::host_plugin"
+
+[package.metadata.leptoskit.runtime.harmonyos]
+unavailable = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+model-cache = ["dep:sha2"]
+native = ["model-cache", "dep:libloading"]
+leptoskit-guest = ["dep:leptoskit_bridge", "leptoskit_bridge/guest"]
+leptoskit-host = ["dep:leptoskit_bridge", "native"]
 
 [dependencies]
+leptoskit_bridge = { version = "0.3.0", optional = true }
+libloading = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+sha2 = { version = "0.10", optional = true }

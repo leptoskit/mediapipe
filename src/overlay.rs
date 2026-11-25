@@ -2,6 +2,7 @@
 
 /// Width and height in the same unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Size {
     /// Horizontal extent. Must be finite and positive for an image or a view.
     pub width: f64,
@@ -23,6 +24,7 @@ impl Size {
 
 /// A point in view or image space.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Point {
     /// Horizontal position.
     pub x: f64,
@@ -41,6 +43,7 @@ impl Point {
 /// An axis-aligned rectangle. `right` and `bottom` are exclusive of the
 /// opposite edges only in the sense that width is `right - left`.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rect {
     /// Left edge.
     pub left: f64,
@@ -82,8 +85,10 @@ impl Rect {
 ///
 /// `x` and `y` are fractions of the upright frame, typically in `0.0..=1.0`.
 /// `z` is the task's relative depth and is not a screen coordinate; mapping
-/// ignores it.
+/// ignores it. `visibility` and `presence` report optional confidence scores
+/// emitted by pose and hand landmarkers.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NormalizedLandmark {
     /// Horizontal position as a fraction of the upright width.
     pub x: f64,
@@ -91,18 +96,37 @@ pub struct NormalizedLandmark {
     pub y: f64,
     /// Relative depth reported by the task. Not used when mapping to the view.
     pub z: f64,
+    /// Optional likelihood that the landmark is visible and unoccluded.
+    pub visibility: Option<f32>,
+    /// Optional likelihood that the landmark is present inside the frame.
+    pub presence: Option<f32>,
 }
 
 impl NormalizedLandmark {
     /// A landmark at normalized `(x, y)` with relative depth `z`.
     #[must_use]
     pub const fn new(x: f64, y: f64, z: f64) -> Self {
-        Self { x, y, z }
+        Self {
+            x,
+            y,
+            z,
+            visibility: None,
+            presence: None,
+        }
+    }
+
+    /// A landmark with explicit `visibility` and `presence` scores.
+    #[must_use]
+    pub const fn with_confidence(mut self, visibility: Option<f32>, presence: Option<f32>) -> Self {
+        self.visibility = visibility;
+        self.presence = presence;
+        self
     }
 }
 
 /// A region in normalized upright-image coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NormalizedRect {
     /// Left edge as a fraction of the upright width.
     pub left: f64,
@@ -129,6 +153,7 @@ impl NormalizedRect {
 
 /// A pixel box on the upright image, origin at the top left.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoundingBox {
     /// Left edge in upright-image pixels.
     pub left: f64,
@@ -158,6 +183,7 @@ impl BoundingBox {
 /// These match the three placements camera previews actually use:
 /// crop to fill, letterbox, or stretch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PreviewFit {
     /// Scale uniformly and crop the overflow. The view is filled.
     Cover,

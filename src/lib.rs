@@ -1,17 +1,21 @@
-//! Map MediaPipe vision results onto a camera preview.
+//! MediaPipe tasks, preview overlay mapping, verified model pinning, and LeptosKit runtime bridge.
 //!
-//! Detection runs on the upright frame: the image after the rotation passed
-//! to the task. A preview widget still crops (`cover`), letterboxes
-//! (`contain`), or stretches (`fill`) that frame, and a front camera is
-//! usually mirrored. [`OverlayTransform`] folds those three facts into one
-//! mapping from normalized landmarks, normalized regions, and pixel boxes
-//! to view coordinates.
+//! Core functionality (always enabled, zero dependencies):
+//! - [`OverlayTransform`] maps upright-frame normalized landmarks, regions, and pixel
+//!   boxes onto a `cover`, `contain`, or `fill` camera preview (with optional front-camera
+//!   mirroring).
+//! - Task data contracts ([`PoseLandmarkerResult`], [`ObjectDetectorResult`],
+//!   [`GestureRecognizerResult`], [`AudioClassifierResult`], [`PoseJoint`], [`MpImage`],
+//!   [`TimestampTracker`], [`FramePacer`]) mirror MediaPipe Tasks `v1.0.0`.
 //!
-//! Coordinates are not rotated again here. Doing so would double-apply the
-//! rotation the task already consumed.
+//! Optional features:
+//! - `serde`: derives `Serialize` and `Deserialize` on geometry and task types.
+//! - `model-cache`: SHA-256 and exact byte-length verified [`ModelPin`] & [`ModelCache`].
+//! - `native`: dynamic `libmediapipe.{so,dylib}` v1.0.0 C-API runtime loader & safe task wrappers.
+//! - `leptoskit-guest` / `leptoskit-host`: `"mediapipe"` `leptoskit_bridge` runtime plugin.
 //!
-//! MediaPipe is a trademark of Google LLC. This crate is independent
-//! software and is not affiliated with or endorsed by Google.
+//! MediaPipe is a trademark of Google LLC. This project is independent software
+//! and is not affiliated with or endorsed by Google.
 //!
 //! ```
 //! use mediapipe::{OverlayTransform, PreviewFit, Size};
@@ -28,9 +32,23 @@
 //! # Ok::<(), mediapipe::OverlayError>(())
 //! ```
 
+#[cfg(any(feature = "leptoskit-guest", feature = "leptoskit-host"))]
+pub mod bridge;
+#[cfg(feature = "model-cache")]
+pub mod models;
+#[cfg(feature = "native")]
+pub mod native;
 mod overlay;
+pub mod tasks;
 
 pub use overlay::{
     BoundingBox, NormalizedLandmark, NormalizedRect, OverlayError, OverlayTransform, Point,
     PreviewFit, Rect, Size,
+};
+pub use tasks::{
+    AudioBuffer, AudioClassifierOptions, AudioClassifierResult, Category, ClassificationHead,
+    Classifications, ClassifierOptions, Detection, FramePacer, GestureRecognizerOptions,
+    GestureRecognizerResult, ImageError, ImageFormat, MpImage, NormalizedKeypoint,
+    ObjectDetectorOptions, ObjectDetectorResult, PoseJoint, PoseLandmarkerOptions,
+    PoseLandmarkerResult, RunningMode, TimestampTracker, VisionObservation, WorldLandmark,
 };
