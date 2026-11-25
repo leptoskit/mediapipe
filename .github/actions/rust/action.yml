@@ -1,0 +1,69 @@
+name: rust
+description: Install the Rust toolchain pinned in rust-toolchain.toml
+
+# rust-toolchain.toml is the one place the channel, components, and default
+# targets are pinned. dtolnay/rust-toolchain installs that channel; jobs that
+# cross-compile pass extra targets.
+
+inputs:
+  targets:
+    description: Comma-separated targets to add beyond rust-toolchain.toml
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: pin
+      name: read rust-toolchain.toml
+      shell: bash
+      env:
+        EXTRA_TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        if command -v python3 >/dev/null 2>&1; then
+          py=python3
+        else
+          py=python
+        fi
+        "$py" - <<'PY'
+        import os
+        import re
+        from pathlib import Path
+
+        text = Path(os.environ["GITHUB_WORKSPACE"], "rust-toolchain.toml").read_text()
+        channel = re.search(r'(?m)^channel = "([^"]+)"', text)
+        if channel is None:
+            raise SystemExit("rust-toolchain.toml has no channel")
+
+        def strings(section):
+            match = re.search(rf"(?m)^{section} = \[(.*?)\]", text, re.S)
+            if match is None:
+                return []
+            return re.findall(r'"([^"]+)"', match.group(1))
+
+        components = [item for item in strings("components") if item != "cargo"]
+        targets = strings("targets")
+        extra = [
+            item
+            for item in os.environ.get("EXTRA_TARGETS", "").replace(" ", ",").split(",")
+            if item
+        ]
+        for item in extra:
+            if item not in targets:
+                targets.append(item)
+        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+            output.write(f"channel={channel.group(1)}\n")
+            output.write(f"components={','.join(components)}\n")
+            output.write(f"targets={','.join(targets)}\n")
+        PY
+
+    - name: install the pinned toolchain
+      uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ steps.pin.outputs.components }}
+        targets: ${{ steps.pin.outputs.targets }}
+
+    - name: verify installed toolchain
+      shell: bash
+      run: rustc --version

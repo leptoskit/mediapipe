@@ -1,0 +1,86 @@
+name: changeset-policy
+
+# Verifies that pull requests modifying the crate carry a changeset (unless exempt via a skip
+# label such as `release` or `dependencies`) and posts a change-classification report comparing
+# the pull request against its base branch.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+      # Re-check a pull request whose base branch changed (for example, a stacked PR retargeted
+      # after its parent merged).
+      - edited
+
+permissions:
+  contents: read
+
+# An edit that leaves the base branch alone gives the policy nothing new to validate. Running it in
+# its own concurrency group prevents a title/body edit from cancelling an in-progress validation.
+concurrency:
+  group: changeset-policy-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && !github.event.changes.base && format('-edit-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && 'check (edit ignored)' || 'check' }}
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      VALIDATE: ${{ github.event.action != 'edited' || github.event.changes.base != null }}
+    steps:
+      - name: skip an edit that keeps the base branch
+        if: ${{ env.VALIDATE != 'true' }}
+        run: echo "This edit leaves the base branch unchanged, so the changeset policy has nothing new to validate."
+
+      - name: checkout repository
+        if: ${{ env.VALIDATE == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: install monochange
+        if: ${{ env.VALIDATE == 'true' }}
+        uses: $/.github/actions/install-monochange
+
+      - name: collect changed files
+        if: ${{ env.VALIDATE == 'true' }}
+        id: changed
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          files="$(git diff --name-only "origin/${BASE_REF}...${HEAD_SHA}" | paste -sd, -)"
+          printf 'all_changed_files=%s\n' "$files" >> "$GITHUB_OUTPUT"
+
+      - name: run changeset policy
+        if: ${{ env.VALIDATE == 'true' }}
+        uses: monochange/actions/changeset-policy@104b58f3ff8b6d3a6153a87a553a2bdaaa42a78f # v0.12.0
+        with:
+          changed-paths: ${{ steps.changed.outputs.all_changed_files }}
+          setup-monochange: false
+          labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: classify changes
+        if: ${{ !cancelled() && env.VALIDATE == 'true' }}
+        uses: monochange/actions/change-classification@104b58f3ff8b6d3a6153a87a553a2bdaaa42a78f # v0.12.0
+        with:
+          setup-monochange: false
+          base: origin/${{ github.event.pull_request.base.ref }}
+          head: ${{ github.event.pull_request.head.sha }}
+          detection-level: signature
+          dependency-propagation: public
+          github-token: ${{ secrets.GITHUB_TOKEN }}

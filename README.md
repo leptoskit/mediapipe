@@ -24,3 +24,17 @@ cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --locked
 cargo test --all-features --locked
 ```
+
+## Releases
+
+Releases are managed with [monochange](https://crates.io/crates/monochange) changesets:
+
+1. Add a changeset on your feature branch:
+
+   ```sh
+   monochange run change --package mediapipe --bump patch --reason "Describe the change"
+   ```
+
+2. Every pull request runs `changeset-policy` (enforcing changesets for crate edits and posting a change-classification summary) and `release pr (simulated)` (rehearsing version bumps, changelog updates, and `Cargo.lock` refresh without committing).
+3. Pushing to `main` runs the `release` workflow, which uses the monochange GitHub App (`MONOCHANGE_RELEASE_BACKEND=hosted`) to open or refresh the single `chore(release): prepare release` pull request and dispatches a `publish.yml` dry run against it.
+4. Merging the release pull request creates the `v<version>` tag, drafts the GitHub release with monochange's release notes, and dispatches `publish.yml` to validate, publish to crates.io (via trusted publishing or `CARGO_REGISTRY_TOKEN`), and flip the draft release public.
